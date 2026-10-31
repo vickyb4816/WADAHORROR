@@ -68,6 +68,7 @@ jobs:
           set -euo pipefail
           mkdir -p build
           ./godot --headless --editor --path . --quit
+          ./godot --headless --editor --path . --install-android-build-template --quit
           ./godot --headless --path . --export-debug "Android" build/WadaHorror-debug.apk
           test -s build/WadaHorror-debug.apk
       - name: Upload APK
