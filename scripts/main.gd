@@ -352,8 +352,8 @@ func _make_tatya() -> void:
         point.position = [Vector3(0, 0, -2), Vector3(5.5, 0, -2), Vector3(5.5, 0, 2), Vector3(-5.5, 0, 2)][i]
         add_child(point)
         patrol_nodes.append(point)
-    tatya.patrol_points = patrol_nodes
-    tatya.set_player(get_node("Laksha"))
+    tatya.set("patrol_points", patrol_nodes)
+    tatya.call("set_player", get_node("Laksha"))
 
 func _start_horror_ambience() -> void:
     var ambience := Node.new()
