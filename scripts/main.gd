@@ -23,7 +23,9 @@ func _ready() -> void:
     _make_roof_silhouette()
     _make_entrance_key()
     _make_player()
-    print("Wada blockout loaded: two floors, central courtyard, 12 room zones and stair access.")
+    _make_tatya()
+    _start_horror_ambience()
+    print("Wada Horror test slice loaded: Laksha, entrance key, two-floor Wada, Tatya and horror ambience.")
 
 func _make_environment() -> void:
     var world := WorldEnvironment.new()
@@ -279,6 +281,85 @@ func _add_cylinder(node_name: String, pos: Vector3, radius: float, height: float
     shape.height = height
     collision.shape = shape
     body.add_child(collision)
+
+
+func _make_tatya() -> void:
+    var tatya := CharacterBody3D.new()
+    tatya.name = "TatyaVinchu"
+    tatya.position = Vector3(0, 0.12, -1.8)
+    tatya.set_script(load("res://scripts/tatya_hunter.gd"))
+    add_child(tatya)
+
+    var body_mesh := MeshInstance3D.new()
+    var robe := CylinderMesh.new()
+    robe.top_radius = 0.34
+    robe.bottom_radius = 0.72
+    robe.height = 1.75
+    body_mesh.mesh = robe
+    body_mesh.position.y = 1.02
+    body_mesh.material_override = _material(Color(0.055, 0.035, 0.045))
+    tatya.add_child(body_mesh)
+
+    var head := MeshInstance3D.new()
+    var head_shape := SphereMesh.new()
+    head_shape.radius = 0.48
+    head_shape.height = 0.9
+    head.mesh = head_shape
+    head.position = Vector3(0, 2.05, -0.02)
+    head.material_override = _material(Color(0.42, 0.31, 0.25))
+    tatya.add_child(head)
+
+    for side in [-1.0, 1.0]:
+        var eye := MeshInstance3D.new()
+        var eye_shape := SphereMesh.new()
+        eye_shape.radius = 0.075
+        eye_shape.height = 0.12
+        eye.mesh = eye_shape
+        eye.position = Vector3(side * 0.18, 2.12, -0.43)
+        eye.material_override = _material(Color(0.95, 0.025, 0.015), true)
+        tatya.add_child(eye)
+
+        var arm := MeshInstance3D.new()
+        var arm_shape := CylinderMesh.new()
+        arm_shape.top_radius = 0.10
+        arm_shape.bottom_radius = 0.14
+        arm_shape.height = 1.05
+        arm.mesh = arm_shape
+        arm.position = Vector3(side * 0.52, 1.15, 0)
+        arm.rotation.z = deg_to_rad(side * -18.0)
+        arm.material_override = _material(Color(0.12, 0.07, 0.065))
+        tatya.add_child(arm)
+
+    var red_glow := OmniLight3D.new()
+    red_glow.position = Vector3(0, 2.05, -0.65)
+    red_glow.light_color = Color(1.0, 0.025, 0.01)
+    red_glow.light_energy = 0.8
+    red_glow.omni_range = 3.5
+    tatya.add_child(red_glow)
+
+    var collision := CollisionShape3D.new()
+    var capsule := CapsuleShape3D.new()
+    capsule.radius = 0.48
+    capsule.height = 2.5
+    collision.shape = capsule
+    collision.position.y = 1.22
+    tatya.add_child(collision)
+
+    var patrol_nodes: Array[Node3D] = []
+    for i in range(4):
+        var point := Node3D.new()
+        point.name = "TatyaPatrolPoint_%d" % i
+        point.position = [Vector3(0, 0, -2), Vector3(5.5, 0, -2), Vector3(5.5, 0, 2), Vector3(-5.5, 0, 2)][i]
+        add_child(point)
+        patrol_nodes.append(point)
+    tatya.patrol_points = patrol_nodes
+    tatya.set_player(get_node("Laksha"))
+
+func _start_horror_ambience() -> void:
+    var ambience := Node.new()
+    ambience.name = "HorrorAmbience"
+    ambience.set_script(load("res://scripts/horror_ambience.gd"))
+    add_child(ambience)
 
 func _material(color: Color, metallic: bool = false) -> StandardMaterial3D:
     var key := color.to_html() + str(metallic)
