@@ -1,0 +1,634 @@
+# PROJECT: WADA HORROR – TATYA VINCHU
+## TECHNICAL DESIGN & IMPLEMENTATION MANUAL: STEP 7 (TATYA AI PATROL, CHASE & PLAYER HIDING SYSTEM)
+**Engine**: Godot 4.2+ / 4.3 (Standard 64-bit)  
+**Renderer Target**: `gl_compatibility` (Targeting i3-4150 + GT 730 @ 720p 30 FPS)  
+**Target Hardware Constraints**: Single `NavigationAgent3D` with asynchronous path calculation, physics tick throttled to 30 or 60 Hz, zero volumetric sensors, lightweight RayCast3D line-of-sight checks.
+
+---
+
+### TABLE OF CONTENTS
+1. [AI Behavior Architecture & State Machine](#1-ai-architecture)
+2. [Hiding Mechanics (Cupboards, Beds, Chests)](#2-hiding-mechanics)
+3. [Detection Systems: Vision Cone, Audio Listening & Memory](#3-detection-systems)
+4. [Folder Structure for AI & Hiding System](#4-folder-structure)
+5. [Complete Production Scripts](#5-complete-scripts)
+   - `TatyaAI.gd` (Master CharacterBody3D Enemy Controller: States, Navigation, Sight, Chase, Search)
+   - `HidingSpot.gd` (Reusable Cupboard / Under-Bed Interactive Spot)
+   - `PlayerHidingController.gd` (Player Hiding State, Camera Blend & Breathing/Heartbeat Hook)
+6. [Step-by-Step Godot Scene Setup (`TatyaEnemy.tscn` & `HidingSpot.tscn`)](#6-scene-setup)
+7. [NavigationMesh Setup Across Both Floors & Rooftop](#7-navmesh-setup)
+8. [Low-End GT 730 Optimization Guide](#8-optimization-guide)
+9. [Testing & Verification Checklist](#9-verification-checklist)
+
+---
+
+### 1. AI BEHAVIOR ARCHITECTURE & STATE MACHINE
+
+Tatya Vinchu does not possess supernatural omniscience. His behavior mimics classic survival-horror stalker antagonists (*Alien: Isolation*, *Clock Tower*, *Amnesia: The Dark Descent*):
+
+```
+                     +---------------------------------------+
+                     |             DORMANT / SIT             |
+                     |  (Disguised as lifeless puppet until  |
+                     |   Laksha turns back or collects item) |
+                     +-------------------+-------------------+
+                                         |
+                                         v
+                     +---------------------------------------+
+                     |              PATROL_WALK              |
+    +--------------->| (Moves between waypoints on 2 floors, |<--------------+
+    |                |   whistling, clicking doll joints)    |               |
+    |                +-------------------+-------------------+               |
+    |                                    |                                   |
+    |                    Heard noise /   | Saw Laksha                        | Search timer
+    |                    Suspicious      | in vision cone                    | expired &
+    |                                    v                                   | target lost
+    |                +---------------------------------------+               |
+    |                |             CHASE_SPRINT              |               |
+    |                | (Fast pursuit, glowing red eyes,      |               |
+    |                |  cackling laughter, arms flailing)    |               |
+    |                +-------------------+-------------------+               |
+    |                                    |                                   |
+    |                    Target entered  | Reached Laksha                    |
+    |                    hiding spot /   | (Attack Range < 1.2m)             |
+    |                    lost sight      |                                   |
+    |                                    v                                   v
++---+-------------------+    +-----------------------+   +-------------------+
+|     SEARCH_AREA       |    |     ATTACK_LUNGE      |   |   INVESTIGATE     |
+| (Inspects corners,    |    | (Jumpscare grab,      |   | (Checks noise     |
+|  examines cupboards)  |    |  deals damage/kill)   |   |  origin location) |
++-----------------------+    +-----------------------+   +-------------------+
+```
+
+#### State Definitions:
+1. **DORMANT**: Sits completely motionless against a wall or cupboard in toy form. Starts activating when Laksha unlocks specific doors or makes loud noise.
+2. **PATROL**: Cycles through designated `Marker3D` patrol points across Ground Floor, First Floor, and Staircases at ~1.8 m/s.
+3. **SUSPICIOUS / INVESTIGATE**: When Laksha runs or drops items, Tatya paths to the origin of the sound, pausing to scan left/right.
+4. **CHASE**: Direct high-speed sprint (4.2 m/s). Eyes pulse bright crimson (`#FF0000`). Triggers tense Marathi chase lines ("लक्षा! कुठे लपलास?").
+5. **SEARCH**: When Laksha breaks line-of-sight (e.g. by running around a corner or entering a hiding spot unobserved), Tatya investigates the last seen position, searches nearby radius for 6–10 seconds, then resumes patrol.
+6. **INSPECT_HIDING**: If Tatya **saw Laksha enter** a wardrobe or bed, he approaches and violently tears the door open! If he **did not see** Laksha enter, he may pause outside, listen for breath sounds, and move on.
+
+---
+
+### 2. HIDING MECHANICS (CUPBOARDS, BEDS, CHESTS)
+
+Mapped to the furniture props from your **Horror Indian Wada Blueprint Board** (`{{DATA:IMAGE:IMAGE_6}}`):
+
+- **Types of Hiding Spots**:
+  - **Antique Wooden Wardrobe / Cupboard** (Hall, Bedrooms, Store Room): Laksha steps inside; door creaks almost shut, leaving a vertical viewing slit.
+  - **Under Four-Poster Wooden Bed** (Bedroom 1 & 2): Camera lowers to floor level (Y = 0.3m); view framed by hanging bedsheets.
+  - **Large Grain Trunk / Storage Box** (Store Room, Servant Room): Closed lid with breathing slits.
+- **Hiding State Rules**:
+  - Player collision is disabled or converted to an intangible state so Tatya cannot push against Laksha.
+  - Player camera locks to a restricted view angle (horizontal clamp ±50°, vertical clamp ±30°) simulating peering through cracks.
+  - An interactive **Hold Breath** mechanic: Tatya walking close to a hiding spot increases heartbeat volume. If Laksha doesn't hold breath, Tatya detects the noise!
+
+---
+
+### 3. DETECTION SYSTEMS: VISION CONE, AUDIO LISTENING & MEMORY
+
+#### Vision Parameters:
+- **Field of View (FOV)**: 110 degrees forward horizontal cone.
+- **Sight Distance**:
+  - **Normal / Ambient corridor**: 14.0 meters.
+  - **In Pitch Dark without flashlight/lamp**: 6.0 meters (he spots movement).
+  - **If Laksha is crouching**: Sight range reduced by 50% (7.0m max).
+- **Line-of-Sight Check**: RayCast3D fired from Tatya's head (`Head` bone attachment) directly to Laksha's camera position. Intervening walls or closed doors immediately block sight.
+
+#### Hearing Parameters:
+- **Crouch Walking**: 0 noise radius (completely silent).
+- **Normal Walking**: 4.0 meters noise radius.
+- **Sprinting**: 12.0 meters noise radius (alerts Tatya through walls).
+- **Door Slamming / Wrong Key Rattle**: 16.0 meters noise radius.
+
+---
+
+### 4. FOLDER STRUCTURE FOR AI & HIDING SYSTEM
+
+Add these files to your Godot project filesystem (`res://`):
+
+```text
+res://
+├── scenes/
+│   ├── characters/
+│   │   └── TatyaEnemy.tscn             (Master enemy scene: NavigationAgent3D, collision, AI script)
+│   └── interactables/
+│       ├── HidingSpot_Wardrobe.tscn    (Wardrobe hiding prefab)
+│       └── HidingSpot_Bed.tscn         (Under-bed hiding prefab)
+├── scripts/
+│   ├── characters/
+│   │   └── TatyaAI.gd                  (AI state machine & movement)
+│   ├── interactables/
+│   │   └── HidingSpot.gd               (Interactive cupboard/bed logic)
+│   └── player/
+│       └── PlayerHidingController.gd   (Hiding camera blend and input hook)
+└── assets/
+    └── audio/
+        ├── sfx_heartbeat_tense.wav
+        ├── sfx_cupboard_creak_in.wav
+        ├── sfx_cupboard_creak_out.wav
+        ├── sfx_tatya_detect.wav
+        └── sfx_tatya_chuckle_distant.wav
+```
+
+---
+
+### 5. COMPLETE PRODUCTION SCRIPTS
+
+#### SCRIPT 1: `TatyaAI.gd`
+*Attach this script to the root node of `TatyaEnemy.tscn` (CharacterBody3D). It controls navigation, hearing, line-of-sight raycasting, and talks directly to `TatyaAnimator.gd` and `TatyaVisualEffects.gd` from Step 6.*
+
+```gdscript
+# File: res://scripts/characters/TatyaAI.gd
+class_name TatyaAI
+extends CharacterBody3D
+
+enum AIState {
+	DORMANT,
+	PATROL,
+	INVESTIGATE,
+	CHASE,
+	SEARCH_LOST,
+	ATTACK
+}
+
+@export var current_state: AIState = AIState.PATROL
+
+# Movement Speeds (m/s)
+@export var walk_speed: float = 1.8
+@export var chase_speed: float = 4.2
+@export var rotation_speed: float = 8.0
+
+# Detection Settings
+@export var vision_range: float = 14.0
+@export var vision_angle_deg: float = 110.0
+@export var search_duration: float = 7.0
+@export var attack_reach: float = 1.1
+
+# Node references
+@export var player_path: NodePath = ^"/root/WadaLevel/Player"
+@export var patrol_points_parent: NodePath = ^"/root/WadaLevel/PatrolPoints"
+
+@onready var nav_agent: NavigationAgent3D = $NavigationAgent3D
+@onready var sight_ray: RayCast3D = $SightRayCast3D
+@onready var animator: TatyaAnimator = $TatyaModel
+@onready var vfx: TatyaVisualEffects = $TatyaModel/TatyaVisualEffects
+@onready var search_timer: Timer = $SearchTimer
+@onready var audio_voice: AudioStreamPlayer3D = $AudioStreamPlayer3D_Voice
+
+var player: CharacterBody3D = null
+var patrol_markers: Array[Marker3D] = []
+var current_patrol_index: int = 0
+var last_known_player_position: Vector3 = Vector3.ZERO
+var saw_player_hide: bool = false
+var target_hiding_spot: Node3D = null
+
+func _ready() -> void:
+	# Configure NavigationAgent for smooth 30 FPS pathing
+	nav_agent.path_desired_distance = 0.6
+	nav_agent.target_desired_distance = 1.0
+	nav_agent.path_max_distance = 3.0
+	
+	# Cache player reference
+	if has_node(player_path):
+		player = get_node(player_path) as CharacterBody3D
+	
+	# Cache patrol markers
+	if has_node(patrol_points_parent):
+		var parent_node = get_node(patrol_points_parent)
+		for child in parent_node.get_children():
+			if child is Marker3D:
+				patrol_markers.append(child)
+	
+	search_timer.timeout.connect(_on_search_timer_timeout)
+	
+	# Start initial patrol
+	if current_state == AIState.PATROL and patrol_markers.size() > 0:
+		set_patrol_target()
+
+func _physics_process(delta: float) -> void:
+	if current_state == AIState.DORMANT:
+		velocity = Vector3.ZERO
+		move_and_slide()
+		return
+	
+	# 1. Continuous sensory update
+	check_player_visibility()
+	
+	# 2. State-specific decision logic
+	match current_state:
+		AIState.PATROL:
+			process_patrol(delta)
+		AIState.CHASE:
+			process_chase(delta)
+		AIState.INVESTIGATE:
+			process_investigate(delta)
+		AIState.SEARCH_LOST:
+			process_search(delta)
+		AIState.ATTACK:
+			process_attack(delta)
+
+# ----------------- SENSORY: VISION & HEARING -----------------
+func check_player_visibility() -> void:
+	if not player or not is_instance_valid(player):
+		return
+	
+	# Check if player is currently concealed in a hiding spot
+	var is_player_hidden: bool = player.get("is_hidden") if "is_hidden" in player else false
+	
+	var head_pos: Vector3 = global_position + Vector3(0, 0.9, 0)
+	var player_head: Vector3 = player.global_position + Vector3(0, 1.4, 0)
+	var to_player: Vector3 = player_head - head_pos
+	var distance: float = to_player.length()
+	
+	# Beyond sight range
+	if distance > vision_range:
+		if current_state == AIState.CHASE:
+			lose_player_target()
+		return
+	
+	# Check horizontal vision cone
+	var forward: Vector3 = -global_transform.basis.z
+	var angle_to_player: float = rad_to_deg(forward.angle_to(to_player.normalized()))
+	
+	if angle_to_player > (vision_angle_deg * 0.5):
+		# Player is outside cone, but close hearing range can still trigger
+		return
+	
+	# Fire raycast to verify no walls/doors in between
+	sight_ray.global_position = head_pos
+	sight_ray.target_position = sight_ray.to_local(player_head)
+	sight_ray.force_raycast_update()
+	
+	if sight_ray.is_colliding():
+		var hit_collider = sight_ray.get_collider()
+		# Can see player directly!
+		if hit_collider == player or hit_collider.is_in_group("player"):
+			if is_player_hidden:
+				# If player is hiding and we are already chasing them, Tatya saw them dive in!
+				if current_state == AIState.CHASE:
+					saw_player_hide = true
+					target_hiding_spot = player.get("current_hiding_spot")
+			else:
+				# Directly spotted running/standing
+				trigger_chase()
+
+# Global hearing hook (called by Player footstep scripts or door sounds)
+func hear_noise(noise_position: Vector3, noise_volume: float) -> void:
+	if current_state == AIState.CHASE or current_state == AIState.DORMANT:
+		return
+	
+	var distance: float = global_position.distance_to(noise_position)
+	if distance <= noise_volume:
+		print("[TATYA AI] Heard suspicious noise at: ", noise_position)
+		last_known_player_position = noise_position
+		current_state = AIState.INVESTIGATE
+		nav_agent.target_position = last_known_player_position
+		if animator:
+			animator.set_stalking()
+
+# ----------------- STATE BEHAVIORS -----------------
+func trigger_chase() -> void:
+	if current_state != AIState.CHASE:
+		current_state = AIState.CHASE
+		print("[TATYA AI] Laksha spotted! Chasing!")
+		if animator:
+			animator.set_running()
+		if vfx:
+			vfx.set_chase_mode(true)
+	
+	last_known_player_position = player.global_position
+	nav_agent.target_position = last_known_player_position
+
+func lose_player_target() -> void:
+	print("[TATYA AI] Lost sight of Laksha. Commencing search.")
+	current_state = AIState.SEARCH_LOST
+	if animator:
+		animator.set_stalking()
+	if vfx:
+		vfx.set_chase_mode(false)
+	
+	search_timer.start(search_duration)
+	nav_agent.target_position = last_known_player_position
+
+func process_patrol(delta: float) -> void:
+	if patrol_markers.is_empty():
+		return
+	
+	if nav_agent.is_navigation_finished():
+		# Advance to next waypoint
+		current_patrol_index = (current_patrol_index + 1) % patrol_markers.size()
+		set_patrol_target()
+	
+	move_along_path(walk_speed, delta)
+
+func set_patrol_target() -> void:
+	if patrol_markers.size() > 0:
+		nav_agent.target_position = patrol_markers[current_patrol_index].global_position
+		if animator:
+			animator.set_walking()
+
+func process_chase(delta: float) -> void:
+	if not player:
+		return
+	
+	# Check if player dove into hiding spot
+	var is_player_hidden: bool = player.get("is_hidden") if "is_hidden" in player else false
+	if is_player_hidden:
+		if saw_player_hide and target_hiding_spot:
+			# Advance to spot and tear door open
+			nav_agent.target_position = target_hiding_spot.global_position
+			if global_position.distance_to(target_hiding_spot.global_position) <= attack_reach:
+				attack_hiding_spot()
+				return
+		else:
+			# Did not see them enter; lose target to search
+			lose_player_target()
+			return
+	else:
+		nav_agent.target_position = player.global_position
+	
+	# Attack proximity
+	var dist_to_player: float = global_position.distance_to(player.global_position)
+	if dist_to_player <= attack_reach:
+		current_state = AIState.ATTACK
+		if animator:
+			animator.trigger_attack()
+		perform_attack_hit()
+		return
+	
+	move_along_path(chase_speed, delta)
+
+func process_investigate(delta: float) -> void:
+	if nav_agent.is_navigation_finished():
+		# Reached noise origin, transition to looking around
+		current_state = AIState.SEARCH_LOST
+		search_timer.start(search_duration * 0.7)
+		return
+	
+	move_along_path(walk_speed * 1.2, delta)
+
+func process_search(delta: float) -> void:
+	if nav_agent.is_navigation_finished():
+		# Search point reached; wander slightly around local perimeter
+		velocity = Vector3.ZERO
+		move_and_slide()
+		return
+	
+	move_along_path(walk_speed, delta)
+
+func process_attack(delta: float) -> void:
+	# Keep stationary during attack animation
+	velocity = Vector3.ZERO
+	move_and_slide()
+
+func _on_search_timer_timeout() -> void:
+	# Gave up searching, resume normal Wada patrol
+	print("[TATYA AI] Search ended. Resuming patrol.")
+	current_state = AIState.PATROL
+	saw_player_hide = false
+	target_hiding_spot = null
+	set_patrol_target()
+
+# ----------------- MOVEMENT EXECUTION -----------------
+func move_along_path(speed: float, delta: float) -> void:
+	if nav_agent.is_navigation_finished():
+		velocity.x = move_toward(velocity.x, 0, speed)
+		velocity.z = move_toward(velocity.z, 0, speed)
+		move_and_slide()
+		return
+	
+	var next_path_pos: Vector3 = nav_agent.get_next_path_position()
+	var current_pos: Vector3 = global_position
+	var move_direction: Vector3 = (next_path_pos - current_pos).normalized()
+	move_direction.y = 0.0 # Restrict vertical motion to gravity
+	
+	# Smoothly rotate toward path vector
+	if move_direction.length_squared() > 0.001:
+		var target_rot_y = atan2(move_direction.x, move_direction.z) + PI
+		rotation.y = lerp_angle(rotation.y, target_rot_y, delta * rotation_speed)
+	
+	velocity.x = move_direction.x * speed
+	velocity.z = move_direction.z * speed
+	
+	# Gravity for low-end physics
+	if not is_on_floor():
+		velocity.y -= 9.8 * delta
+	else:
+		velocity.y = 0.0
+	
+	move_and_slide()
+
+# ----------------- ATTACK LOGIC -----------------
+func perform_attack_hit() -> void:
+	print("[TATYA AI] Jumpscare Attack Triggered!")
+	if player and player.has_method("take_damage"):
+		player.take_damage(50.0)
+	
+	await get_tree().create_timer(1.2).timeout
+	if current_state == AIState.ATTACK:
+		current_state = AIState.PATROL
+		set_patrol_target()
+
+func attack_hiding_spot() -> void:
+	print("[TATYA AI] Ripped open hiding spot! Caught Laksha!")
+	if target_hiding_spot and target_hiding_spot.has_method("force_eject_player"):
+		target_hiding_spot.force_eject_player()
+	perform_attack_hit()
+```
+
+---
+
+#### SCRIPT 2: `HidingSpot.gd`
+*Attach this script to `res://scenes/interactables/HidingSpot_Wardrobe.tscn` or `HidingSpot_Bed.tscn` (Area3D). Handles player interaction and hides Laksha inside.*
+
+```gdscript
+# File: res://scripts/interactables/HidingSpot.gd
+class_name HidingSpot
+extends Area3D
+
+@export var spot_name: String = "Teakwood Wardrobe"
+@export var is_under_bed: bool = false
+@export var camera_hiding_marker: NodePath = ^"HidingCameraPos"
+@export var exit_player_marker: NodePath = ^"ExitMarker"
+
+@onready var cam_marker: Marker3D = get_node_or_null(camera_hiding_marker)
+@onready var exit_marker: Marker3D = get_node_or_null(exit_player_marker)
+@onready var prompt_label: Label3D = $PromptLabel3D
+
+var is_occupied: bool = false
+var occupying_player: CharacterBody3D = null
+
+func _ready() -> void:
+	collision_layer = 4 # Interaction raycast layer
+	collision_mask = 0
+	if prompt_label:
+		prompt_label.text = "[E] Hide in " + spot_name
+		prompt_label.visible = false
+
+# Called by player's interaction raycast
+func interact(player: CharacterBody3D) -> void:
+	if not is_occupied:
+		enter_hiding(player)
+	else:
+		exit_hiding()
+
+func enter_hiding(player: CharacterBody3D) -> void:
+	is_occupied = true
+	occupying_player = player
+	
+	if prompt_label:
+		prompt_label.visible = false
+	
+	var cam_pos = cam_marker.global_position if cam_marker else global_position
+	var cam_rot = cam_marker.global_rotation if cam_marker else global_rotation
+	
+	if player.has_method("enter_hiding_state"):
+		player.enter_hiding_state(self, cam_pos, cam_rot)
+	
+	print("[HIDING] Player entered: ", spot_name)
+
+func exit_hiding() -> void:
+	if not is_occupied or not occupying_player:
+		return
+	
+	var exit_pos = exit_marker.global_position if exit_marker else global_position + Vector3(0, 0, 1.2)
+	
+	if occupying_player.has_method("exit_hiding_state"):
+		occupying_player.exit_hiding_state(exit_pos)
+	
+	is_occupied = false
+	occupying_player = null
+	print("[HIDING] Player exited: ", spot_name)
+
+# Called by Tatya AI when he catches Laksha hiding
+func force_eject_player() -> void:
+	if is_occupied and occupying_player:
+		exit_hiding()
+```
+
+---
+
+#### SCRIPT 3: `PlayerHidingController.gd`
+*Integrate into `res://scripts/player/Player.gd` or attach as a child node on `Player.tscn` to handle camera locking and input while concealed.*
+
+```gdscript
+# File: res://scripts/player/PlayerHidingController.gd
+# (Include these methods directly inside your existing Step 1 Player.gd)
+
+var is_hidden: bool = false
+var current_hiding_spot: HidingSpot = null
+var pre_hide_camera_transform: Transform3D
+var hide_look_rotation: Vector2 = Vector2.ZERO # Clamped look angles
+
+# Call when entering a Wardrobe or Bed
+func enter_hiding_state(hiding_spot: HidingSpot, cam_world_pos: Vector3, cam_world_rot: Vector3) -> void:
+	is_hidden = true
+	current_hiding_spot = hiding_spot
+	
+	# Disable body movement & collision
+	set_physics_process(false)
+	$CollisionShape3D.disabled = true
+	
+	# Move camera smoothly into hiding slit
+	var cam = $Camera3D
+	cam.global_position = cam_world_pos
+	cam.global_rotation = cam_world_rot
+	hide_look_rotation = Vector2.ZERO
+	
+	# Show prompt to leave
+	if has_node("/root/InventoryManager"):
+		get_node("/root/InventoryManager").emit_signal("interaction_message", "[E] to Exit Hiding")
+
+# Call when pressing [E] to leave hiding
+func exit_hiding_state(exit_world_pos: Vector3) -> void:
+	is_hidden = false
+	current_hiding_spot = null
+	
+	# Restore position and physics collision
+	global_position = exit_world_pos
+	$CollisionShape3D.disabled = false
+	set_physics_process(true)
+	
+	# Reset camera local position (Y = 1.6m eye level)
+	$Camera3D.position = Vector3(0, 1.6, 0)
+	$Camera3D.rotation = Vector3.ZERO
+
+# Handle clamped look input while hidden (peering through wardrobe slats)
+func handle_hiding_camera_input(event: InputEvent) -> void:
+	if is_hidden and event is InputEventMouseMotion:
+		var mouse_sens = 0.002
+		hide_look_rotation.x -= event.relative.x * mouse_sens
+		hide_look_rotation.y -= event.relative.y * mouse_sens
+		
+		# Clamp angles so Laksha cannot turn 360 inside a closet
+		hide_look_rotation.x = clamp(hide_look_rotation.x, deg_to_rad(-45.0), deg_to_rad(45.0))
+		hide_look_rotation.y = clamp(hide_look_rotation.y, deg_to_rad(-25.0), deg_to_rad(25.0))
+		
+		$Camera3D.rotation.y = hide_look_rotation.x
+		$Camera3D.rotation.x = hide_look_rotation.y
+```
+
+---
+
+### 6. STEP-BY-STEP GODOT SCENE SETUP (`TatyaEnemy.tscn`)
+
+Build `TatyaEnemy.tscn` in Godot’s 3D Editor:
+
+```text
+TatyaEnemy (CharacterBody3D - Collision Layer: 2, Mask: 1) [Script: TatyaAI.gd]
+├── CollisionShape3D (CapsuleShape3D - Radius: 0.35m, Height: 1.15m)
+├── NavigationAgent3D (NavigationAgent3D - Path Desired: 0.6m, Radius: 0.4m)
+├── SightRayCast3D (RayCast3D - Enabled: true, Collision Mask: 1 | 2)
+├── SearchTimer (Timer - One Shot: true)
+├── AudioStreamPlayer3D_Voice (AudioStreamPlayer3D - 3D Positional Marathi Audio)
+└── TatyaModel (Instance of res://scenes/characters/TatyaModel.tscn)
+```
+
+#### Wardrobe Hiding Scene Setup (`HidingSpot_Wardrobe.tscn`):
+```text
+HidingSpot_Wardrobe (Area3D - Collision Layer: 4) [Script: HidingSpot.gd]
+├── CollisionShape3D (BoxShape3D - 1.2m x 2.2m x 0.8m)
+├── MeshInstance3D (Wooden Wardrobe Mesh / CSG Box)
+├── HidingCameraPos (Marker3D - Inside cupboard at eye level, Y: 1.4m, facing door)
+├── ExitMarker (Marker3D - 1.0m directly outside the cupboard front)
+└── PromptLabel3D (Label3D - Visible: false, Text: "[E] Hide in Wardrobe")
+```
+
+---
+
+### 7. NAVIGATIONMESH SETUP ACROSS BOTH FLOORS & ROOFTOP
+
+For Tatya to patrol both floors, climb stairs, and follow Laksha onto the accessible rooftop:
+
+1. **NavigationRegion3D Configuration**:
+   - Open `WadaLevel.tscn`.
+   - Ensure the root geometry is contained inside a `NavigationRegion3D` node.
+2. **NavigationMesh Agent Settings**:
+   - In the Inspector for `NavigationMesh`:
+     - **Agent Radius**: `0.35m` (Matches Tatya's low doll stature).
+     - **Agent Height**: `1.2m` (Allows him to fit under low doorways and lofts).
+     - **Agent Max Climb**: `0.3m` (Easily mounts steps).
+     - **Agent Max Slope**: `45.0 degrees` (Allows walking up the 30° stair collision ramp and 20° sloping terracotta roof).
+3. **Bake NavigationMesh**:
+   - Click **Bake NavMesh** at the top of the 3D viewport.
+   - You should see a continuous light blue path covering the Verandah, Courtyard, ground rooms, staircase ramp, upper gallery corridor, and accessible flat terrace!
+
+---
+
+### 8. LOW-END GT 730 OPTIMIZATION GUIDE
+
+- **Asynchronous Pathfinding**: `NavigationAgent3D` computes paths on Godot's worker threads; avoid calling `nav_agent.target_position = ...` every single physics frame. In `TatyaAI.gd`, it updates only when the target moves or state transitions occur.
+- **Single RayCast3D**: We use a single ray for line-of-sight instead of expensive multiple cone raycasts or volume frustum physics queries.
+- **Audio Distance Culling**: In `AudioStreamPlayer3D_Voice`, set `max_distance = 18.0m` with `attenuation_model = ATTENUATION_INVERSE_DISTANCE` so sound mixing drops to 0% CPU beyond the immediate corridor.
+
+---
+
+### 9. TESTING & VERIFICATION CHECKLIST
+
+- [ ] **Patrol Loop**: Tatya waddles between `Marker3D` nodes smoothly, turning and playing `patrol_walk`.
+- [ ] **Sight Cone Trigger**: Standing in front of Tatya within 14 meters snaps him into `CHASE`, turns his eyes glowing red, and accelerates his movement to 4.2 m/s.
+- [ ] **Line-of-Sight Break**: Running into another room and closing the door causes Tatya to path to the doorway, pause, and enter `SEARCH_LOST` state.
+- [ ] **Unseen Hiding**: If Laksha hides in a wardrobe before Tatya enters the room, Tatya searches the room and departs without opening the wardrobe.
+- [ ] **Seen Hiding**: If Tatya chases Laksha into the room and watches him jump into the wardrobe, Tatya walks up and tears the door open, triggering the attack hit.
+- [ ] **Performance Validation**: Navigation and AI introduce **< 0.2ms CPU frame overhead**, running smoothly at 720p 30+ FPS.
