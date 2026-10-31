@@ -1,0 +1,7 @@
+.godot/
+.import/
+.export/
+build/*.apk
+build/*.aab
+*.tmp
+.DS_Store
