@@ -1,0 +1,70 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '**.gd'
+      - '**.tscn'
+      - '**.tres'
+      - '**.godot'
+      - 'project.godot'
+      - 'export_presets.cfg'
+      - '.github/workflows/build-android.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  export-android:
+    name: Export Android debug APK
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Godot 4.7
+        shell: bash
+        run: |
+          set -euo pipefail
+          GODOT_VERSION='4.7-stable'
+          curl -L --fail -o godot.zip "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          unzip -q godot.zip
+          mv "Godot_v${GODOT_VERSION}_linux.x86_64" godot
+          chmod +x godot
+          curl -L --fail -o templates.tpz "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_export_templates.tpz"
+          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}"
+          unzip -q templates.tpz -d templates
+          cp -a templates/templates/. "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}/"
+      - name: Configure Android export paths
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.config/godot"
+          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+          [resource]
+          export/android/android_sdk_path = "$ANDROID_HOME"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          EOF
+      - name: Validate project and export APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          ./godot --headless --editor --path . --quit
+          ./godot --headless --path . --export-debug "Android" build/WadaHorror-debug.apk
+          test -s build/WadaHorror-debug.apk
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WadaHorror-Android-APK
+          path: build/WadaHorror-debug.apk
+          if-no-files-found: error
+          retention-days: 14
