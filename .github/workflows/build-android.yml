@@ -47,9 +47,11 @@ jobs:
           mv "Godot_v${GODOT_VERSION}_linux.x86_64" godot
           chmod +x godot
           curl -L --fail -o templates.tpz "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_export_templates.tpz"
-          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}"
+          mkdir -p "$HOME/.local/share/godot/export_templates/4.7.stable"
           unzip -q templates.tpz -d templates
-          cp -a templates/templates/. "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}/"
+          cp -a templates/templates/. "$HOME/.local/share/godot/export_templates/4.7.stable/"
+          test -s "$HOME/.local/share/godot/export_templates/4.7.stable/android_debug.apk"
+          test -s "$HOME/.local/share/godot/export_templates/4.7.stable/android_release.apk"
       - name: Configure Android export paths
         shell: bash
         run: |
